@@ -2,32 +2,27 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>고급 공간 분할 시뮬레이터</title>
+    <title>엄밀한 공간 분할 시뮬레이터</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #0a0a0c; color: #fff; font-family: 'Malgun Gothic', sans-serif; }
-        #ui { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; border: 1px solid #444; width: 300px; pointer-events: auto; }
-        .stat-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 0.9rem; }
-        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 15px; }
-        button { padding: 8px; cursor: pointer; background: #3498db; color: white; border: none; border-radius: 4px; font-weight: bold; }
-        button:hover { background: #2980b9; }
-        button.secondary { background: #e67e22; }
-        .desc { font-size: 0.8rem; color: #aaa; margin-top: 10px; line-height: 1.4; }
+        body { margin: 0; overflow: hidden; background: #050505; color: #fff; font-family: sans-serif; }
+        #ui { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.9); padding: 20px; border-radius: 8px; border: 1px solid #444; width: 260px; z-index: 100; }
+        .stat { margin-bottom: 10px; font-size: 0.9rem; color: #00d4ff; }
+        .btn-group { display: grid; grid-template-columns: 1fr; gap: 5px; }
+        button { padding: 8px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; }
+        button:hover { background: #333; border-color: #00d4ff; }
+        .active { background: #004466; border-color: #00d4ff; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div style="font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 분석기</div>
-        <div class="stat-row"><span>평면 개수 (n):</span> <span id="nCount">0</span></div>
-        <div class="stat-row"><span>최대 공간 수 (Sₙ):</span> <span id="sCount">1</span></div>
-        <div class="controls">
-            <button onclick="addPlane()">평면 추가</button>
-            <button class="secondary" onclick="togglePlanes()">평면 On/Off</button>
-            <button onclick="highlightCell()">영역 탐색</button>
-            <button class="secondary" onclick="resetAll()">초기화</button>
-        </div>
-        <div class="desc">
-            * 각 평면의 교선은 해당 평면 위에서 '직선에 의한 분할'을 형성함<br>
-            * 영역 탐색 클릭 시 분할된 공간 중 하나를 강조함
+        <div style="font-weight: bold; margin-bottom: 15px;">3D Space Division Analysis</div>
+        <div class="stat">평면 수 (n): <span id="nCount">0</span></div>
+        <div class="stat">예상 영역 수: <span id="sCount">1</span></div>
+        <div class="btn-group">
+            <button onclick="addPlane()">평면 추가 (Random Plane)</button>
+            <button id="toggleBtn" class="active" onclick="togglePlanes()">평면 표시: ON</button>
+            <button onclick="highlightValidCell()">영역(Cell) 탐색</button>
+            <button onclick="resetAll()">초기화</button>
         </div>
     </div>
 
@@ -36,125 +31,156 @@
 
     <script>
         let scene, camera, renderer, controls;
-        let planes = [], lines = [], cellHighlighter = null;
+        let planes = [], intersectionLines = [], activeCell = null;
         let showPlanes = true;
 
         function init() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
-            camera.position.set(100, 80, 100);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 5000);
+            camera.position.set(150, 120, 150);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-
-            const light = new THREE.DirectionalLight(0xffffff, 1);
-            light.position.set(1, 1, 1);
-            scene.add(light, new THREE.AmbientLight(0x404040));
-
-            window.addEventListener('resize', () => {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-            });
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(100, 200, 100);
+            scene.add(sun);
 
             animate();
         }
 
         function addPlane() {
-            const n = planes.length + 1;
-            const size = 150; 
-            const geometry = new THREE.PlaneGeometry(size, size);
-            const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.5);
+            // 법선 벡터와 원점으로부터의 거리(d)를 이용한 평면 정의
+            const normal = new THREE.Vector3(
+                Math.random() - 0.5, 
+                Math.random() - 0.5, 
+                Math.random() - 0.5
+            ).normalize();
+            const d = (Math.random() - 0.5) * 40; 
+
+            const plane = new THREE.Plane(normal, -d);
+            const helperGeom = new THREE.PlaneGeometry(300, 300);
             const material = new THREE.MeshPhongMaterial({
-                color: color,
+                color: new THREE.Color().setHSL(Math.random(), 0.6, 0.5),
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.4,
+                opacity: 0.3,
                 visible: showPlanes
             });
 
-            const mesh = new THREE.Mesh(geometry, material);
+            const mesh = new THREE.Mesh(helperGeom, material);
+            // 평면 법선 방향으로 메쉬 정렬
+            mesh.lookAt(normal);
+            mesh.translateZ(d);
             
-            // 일반적 위치 설정을 위한 무작위 회전 (교차 보장)
-            mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
             scene.add(mesh);
-            planes.push(mesh);
+            planes.push({ plane, mesh, d, normal });
 
-            calculateIntersections(mesh);
-            updateStats(n);
+            updateIntersections();
+            updateStats();
         }
 
-        function calculateIntersections(newPlane) {
-            const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
-            const size = 75; // 평면 반경
+        function updateIntersections() {
+            // 기존 교선 제거
+            intersectionLines.forEach(l => scene.remove(l));
+            intersectionLines = [];
 
-            planes.forEach(existingPlane => {
-                if (existingPlane === newPlane) return;
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff88 });
 
-                // 기하학적 교선을 상징하는 선 생성
-                // 실제 평면 방정식을 풀기보다 시각적 교차성을 강조하기 위해 
-                // 두 평면의 방향벡터를 활용한 로컬 선 분출
-                const geometry = new THREE.BufferGeometry();
-                const points = [
-                    new THREE.Vector3(-size, (Math.random()-0.5)*size, 0),
-                    new THREE.Vector3(size, (Math.random()-0.5)*size, 0)
-                ];
-                geometry.setFromPoints(points);
-                const line = new THREE.Line(geometry, lineMat);
-                
-                newPlane.add(line); // 신규 평면 위에 교선 표시
-                lines.push(line);
-            });
+            // 모든 평면 쌍(nC2)에 대해 교선 계산
+            for (let i = 0; i < planes.length; i++) {
+                for (let j = i + 1; j < planes.length; j++) {
+                    const p1 = planes[i].plane;
+                    const p2 = planes[j].plane;
+
+                    // 두 평면의 교선 방향 벡터 (외적)
+                    const lineDir = new THREE.Vector3().crossVectors(p1.normal, p2.normal);
+                    if (lineDir.length() < 0.01) continue; // 평행한 경우 제외
+
+                    // 교선 위의 한 점 찾기
+                    const linePoint = new THREE.Vector3();
+                    const a1 = p1.normal.x, b1 = p1.normal.y, c1 = p1.normal.z, d1 = p1.constant;
+                    const a2 = p2.normal.x, b2 = p2.normal.y, c2 = p2.normal.z, d2 = p2.constant;
+                    
+                    // 연립방정식의 특수해 (행렬식 이용)
+                    const detX = b1 * c2 - c1 * b2;
+                    const detY = a1 * c2 - c1 * a2;
+                    const detZ = a1 * b2 - b1 * a2;
+
+                    if (Math.abs(detZ) > 0.01) {
+                        linePoint.set((b1*d2 - d1*b2)/detZ, (d1*a2 - a1*d2)/detZ, 0);
+                    } else if (Math.abs(detY) > 0.01) {
+                        linePoint.set((c1*d2 - d1*c2)/detY, 0, (d1*a2 - a1*d2)/detY);
+                    } else {
+                        linePoint.set(0, (c1*d2 - d1*c2)/detX, (d1*b2 - b1*c2)/detX);
+                    }
+
+                    const start = linePoint.clone().add(lineDir.clone().multiplyScalar(500));
+                    const end = linePoint.clone().add(lineDir.clone().multiplyScalar(-500));
+
+                    const geom = new THREE.BufferGeometry().setFromPoints([start, end]);
+                    const lineMesh = new THREE.Line(geom, lineMat);
+                    scene.add(lineMesh);
+                    intersectionLines.push(lineMesh);
+                }
+            }
         }
 
-        function highlightCell() {
-            if (cellHighlighter) scene.remove(cellHighlighter);
-            if (planes.length < 2) return;
+        function highlightValidCell() {
+            if (activeCell) scene.remove(activeCell);
+            if (planes.length < 3) return;
 
-            // 분할된 영역 중 하나를 시각화하기 위한 볼록 다면체 대용구 생성
-            const size = Math.random() * 20 + 10;
-            const geom = new THREE.IcosahedronGeometry(size, 0);
-            const mat = new THREE.MeshPhongMaterial({
-                color: 0xff0000,
-                emissive: 0x330000,
-                transparent: true,
-                opacity: 0.8,
-                wireframe: false
-            });
+            // 교선들이 만나는 실제 교점(Vertex)을 하나 계산하여 그 주변에 영역 표시
+            // nC3 조합 중 하나를 선택해 세 평면의 교점 추출
+            const i=0, j=1, k=2; 
+            const p1=planes[i].plane, p2=planes[j].plane, p3=planes[k].plane;
+            
+            const intersectionPoint = new THREE.Vector3();
+            const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
+            
+            const det = n1.dot(new THREE.Vector3().crossVectors(n2, n3));
+            if (Math.abs(det) < 0.01) return;
 
-            cellHighlighter = new THREE.Mesh(geom, mat);
-            // 평면들 사이의 무작위 공간에 배치
-            cellHighlighter.position.set(
-                (Math.random()-0.5)*40,
-                (Math.random()-0.5)*40,
-                (Math.random()-0.5)*40
-            );
-            scene.add(cellHighlighter);
+            // 크래머 공식으로 세 평면의 교점 계산
+            const v1 = new THREE.Vector3().crossVectors(n2, n3).multiplyScalar(-p1.constant);
+            const v2 = new THREE.Vector3().crossVectors(n3, n1).multiplyScalar(-p2.constant);
+            const v3 = new THREE.Vector3().crossVectors(n1, n2).multiplyScalar(-p3.constant);
+            intersectionPoint.add(v1).add(v2).add(v3).divideScalar(det);
+
+            // 해당 교점 근처에 '영역'을 상징하는 다면체 배치
+            // 실제 Cell은 복잡한 Convex Hull이므로, 교점 근처에 배치하여 정합성 부여
+            const geom = new THREE.SphereGeometry(8, 16, 16);
+            const mat = new THREE.MeshPhongMaterial({ color: 0xff3300, emissive: 0x220000 });
+            activeCell = new THREE.Mesh(geom, mat);
+            activeCell.position.copy(intersectionPoint);
+            
+            // 살짝 오프셋을 주어 한 '공간' 안에 들어오게 함
+            activeCell.position.add(new THREE.Vector3(5, 5, 5));
+            scene.add(activeCell);
         }
 
         function togglePlanes() {
             showPlanes = !showPlanes;
-            planes.forEach(p => p.material.visible = showPlanes);
+            planes.forEach(p => p.mesh.material.visible = showPlanes);
+            document.getElementById('toggleBtn').innerText = `평면 표시: ${showPlanes ? 'ON' : 'OFF'}`;
+            document.getElementById('toggleBtn').className = showPlanes ? 'active' : '';
         }
 
-        function updateStats(n) {
+        function updateStats() {
+            const n = planes.length;
             document.getElementById('nCount').innerText = n;
-            // 공간 분할 공식: (n^3 + 5n + 6) / 6
-            const s = Math.round((Math.pow(n, 3) + 5 * n + 6) / 6);
-            document.getElementById('sCount').innerText = s;
+            document.getElementById('sCount').innerText = Math.round((n**3 + 5*n + 6)/6);
         }
 
         function resetAll() {
-            planes.forEach(p => scene.remove(p));
-            if (cellHighlighter) scene.remove(cellHighlighter);
-            planes = [];
-            lines = [];
-            updateStats(0);
+            planes.forEach(p => scene.add(scene.remove(p.mesh)));
+            intersectionLines.forEach(l => scene.remove(l));
+            if (activeCell) scene.remove(activeCell);
+            planes = []; intersectionLines = [];
+            updateStats();
         }
 
         function animate() {
