@@ -2,29 +2,29 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>정밀 공간 분할 시뮬레이터</title>
+    <title 평면에 의한 공간 분할</title>
     <style>
         body { margin: 0; overflow: hidden; background: #050505; color: #fff; font-family: sans-serif; }
         #ui { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.9); padding: 20px; border-radius: 8px; border: 1px solid #444; width: 280px; z-index: 100; }
         .stat { margin-bottom: 10px; font-size: 0.9rem; color: #00d4ff; }
         .btn-group { display: grid; grid-template-columns: 1fr; gap: 8px; }
-        button { padding: 10px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; transition: 0.2s; }
+        button { padding: 10px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; }
         button:hover { background: #333; border-color: #00d4ff; }
         .desc { font-size: 0.75rem; color: #888; margin-top: 10px; line-height: 1.4; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 정밀 분석</div>
+        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 정밀 라벨링</div>
         <div class="stat">평면 수 (n): <span id="nCount">0</span></div>
-        <div class="stat">현재 영역 번호: <span id="cellIdx">-</span> / <span id="sCount">1</span></div>
+        <div class="stat">영역 탐색: <span id="cellIdx">0</span> / <span id="sCount">1</span></div>
         <div class="btn-group">
-            <button onclick="addOptimizedPlane()">최적 평면 추가 (Max Division)</button>
-            <button onclick="togglePlanes()">평면 표시 전환 (ON/OFF)</button>
-            <button onclick="nextCell()" style="background: #004466;">다음 영역 탐색 (Cell Clipping)</button>
+            <button onclick="addOptimizedPlane()">최적 평면 추가</button>
+            <button onclick="togglePlanes()">평면 표시 전환</button>
+            <button onclick="navigateCells()" style="background: #004466;">영역 순차 탐색</button>
             <button onclick="resetAll()">초기화</button>
         </div>
-        <div class="desc">탐색 시 평면들에 의해 실제로 절단된 공간의 형태(Convex Polyhedron)를 시뮬레이션한다.</div>
+        <div class="desc">* 내부적으로 각 영역을 Sign Vector로 라벨링하여 중복 없이 개별 영역을 추출한다.</div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -33,15 +33,17 @@
     <script>
         let scene, camera, renderer, controls;
         let planes = [], intersectionLines = [], currentCellMesh = null;
-        let showPlanes = true, currentCellSeed = 0;
+        let showPlanes = true, cellIndex = 0;
+        let validSignVectors = []; // 라벨링된 유효 영역 정보
 
         function init() {
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 5000);
-            camera.position.set(180, 150, 180);
+            camera.position.set(200, 180, 200);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.localClippingEnabled = true;
             document.body.appendChild(renderer.domElement);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -55,9 +57,8 @@
 
         function addOptimizedPlane() {
             const n = planes.length;
-            // 일반적 위치 보장: 각도를 순차적으로 비틀어 중복 교차 방지
-            const phi = n * 137.5 * (Math.PI / 180); // 황금각 기반 분산
-            const theta = Math.acos(1 - 2 * (n / 10)); 
+            const phi = n * 137.5 * (Math.PI / 180);
+            const theta = Math.acos(1 - 2 * ((n + 0.5) / 10)); 
             
             const normal = new THREE.Vector3(
                 Math.sin(theta) * Math.cos(phi),
@@ -65,16 +66,15 @@
                 Math.cos(theta)
             ).normalize();
 
-            // 원점 통과 방지 및 일정한 간격 유지를 위한 오프셋 d
-            const d = (n + 1) * 15 * (n % 2 === 0 ? 1 : -1);
-
+            const d = (n + 1) * 20 * (n % 2 === 0 ? 1 : -1);
             const plane = new THREE.Plane(normal, -d);
-            const helperGeom = new THREE.PlaneGeometry(500, 500);
+            
+            const helperGeom = new THREE.PlaneGeometry(800, 800);
             const material = new THREE.MeshPhongMaterial({
                 color: new THREE.Color().setHSL((n * 0.15) % 1, 0.6, 0.5),
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.25,
+                opacity: 0.2,
                 visible: showPlanes
             });
 
@@ -86,13 +86,97 @@
             planes.push({ plane, mesh, normal, d });
 
             updateIntersections();
+            findValidCells(); // 평면 추가 시마다 영역 라벨링 갱신
+            updateStats();
+        }
+
+        // 각 영역의 고유한 Sign Vector를 찾는 라벨링 알고리즘
+        function findValidCells() {
+            validSignVectors = [];
+            const n = planes.length;
+            if (n === 0) return;
+
+            // 샘플링 기반 라벨링: 교점(Vertex) 근처의 공간들을 탐색하여 유효한 영역 벡터 추출
+            // n개의 평면이 일반적 위치에 있을 때 모든 영역은 교점 주위에 존재함
+            const pointsToTest = [new THREE.Vector3(0,0,0)];
+            
+            // 모든 3개 평면의 교점 계산
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    for (let k = j + 1; k < n; k++) {
+                        const p1 = planes[i].plane, p2 = planes[j].plane, p3 = planes[k].plane;
+                        const intersection = calculateThreePlaneIntersection(p1, p2, p3);
+                        if (intersection) {
+                            // 교점 근처의 8개 방향(Small epsilon offset)을 테스트하여 인접 영역 라벨링
+                            const eps = 2.0;
+                            for (let s1 of [-1, 1]) {
+                                for (let s2 of [-1, 1]) {
+                                    for (let s3 of [-1, 1]) {
+                                        const testPt = intersection.clone().add(new THREE.Vector3(s1*eps, s2*eps, s3*eps));
+                                        addIfUnique(testPt);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function calculateThreePlaneIntersection(p1, p2, p3) {
+            const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
+            const det = n1.dot(new THREE.Vector3().crossVectors(n2, n3));
+            if (Math.abs(det) < 0.001) return null;
+
+            const v1 = new THREE.Vector3().crossVectors(n2, n3).multiplyScalar(-p1.constant);
+            const v2 = new THREE.Vector3().crossVectors(n3, n1).multiplyScalar(-p2.constant);
+            const v3 = new THREE.Vector3().crossVectors(n1, n2).multiplyScalar(-p3.constant);
+            return new THREE.Vector3().add(v1).add(v2).add(v3).divideScalar(det);
+        }
+
+        function addIfUnique(point) {
+            const vector = planes.map(p => (point.dot(p.normal) + p.plane.constant > 0 ? 1 : -1));
+            const key = vector.join(',');
+            if (!validSignVectors.some(v => v.key === key)) {
+                validSignVectors.push({ key, vector, center: point.clone() });
+            }
+        }
+
+        function navigateCells() {
+            if (validSignVectors.length === 0) return;
+            if (currentCellMesh) scene.remove(currentCellMesh);
+
+            const cellData = validSignVectors[cellIndex % validSignVectors.length];
+            
+            // 모든 평면에 의해 절단될 충분히 큰 부피체 생성
+            const geometry = new THREE.BoxGeometry(1000, 1000, 1000);
+            const clippingPlanes = planes.map((p, i) => {
+                const sign = cellData.vector[i];
+                return new THREE.Plane(p.normal.clone().multiplyScalar(-sign), p.plane.constant * -sign);
+            });
+
+            const material = new THREE.MeshPhongMaterial({
+                color: 0xff3300,
+                transparent: true,
+                opacity: 0.8,
+                shininess: 100,
+                clippingPlanes: clippingPlanes,
+                side: THREE.DoubleSide
+            });
+
+            currentCellMesh = new THREE.Mesh(geometry, material);
+            // 영역의 가시성을 위해 해당 영역의 '샘플 중심점'으로 메시 이동
+            currentCellMesh.position.copy(cellData.center);
+            scene.add(currentCellMesh);
+
+            cellIndex++;
             updateStats();
         }
 
         function updateIntersections() {
             intersectionLines.forEach(l => scene.remove(l));
             intersectionLines = [];
-            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, opacity: 0.6, transparent: true });
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.5 });
 
             for (let i = 0; i < planes.length; i++) {
                 for (let j = i + 1; j < planes.length; j++) {
@@ -100,66 +184,21 @@
                     const lineDir = new THREE.Vector3().crossVectors(p1.normal, p2.normal);
                     if (lineDir.length() < 0.001) continue;
 
-                    const linePoint = new THREE.Vector3();
                     const m = new THREE.Matrix4().set(
                         p1.normal.x, p1.normal.y, p1.normal.z, 0,
                         p2.normal.x, p2.normal.y, p2.normal.z, 0,
                         lineDir.x, lineDir.y, lineDir.z, 0,
                         0, 0, 0, 1
-                    );
-                    const invM = m.invert();
-                    linePoint.set(-p1.constant, -p2.constant, 0).applyMatrix4(invM);
+                    ).invert();
+                    const linePoint = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
 
                     const geom = new THREE.BufferGeometry().setFromPoints([
                         linePoint.clone().add(lineDir.clone().multiplyScalar(1000)),
                         linePoint.clone().add(lineDir.clone().multiplyScalar(-1000))
                     ]);
-                    const line = new THREE.Line(geom, lineMat);
-                    scene.add(line);
-                    intersectionLines.push(line);
+                    scene.add(new THREE.Line(geom, lineMat));
                 }
             }
-        }
-
-        function nextCell() {
-            if (planes.length < 2) return;
-            if (currentCellMesh) scene.remove(currentCellMesh);
-
-            const n = planes.length;
-            const maxS = Math.round((n**3 + 5*n + 6)/6);
-            currentCellSeed = (currentCellSeed + 1) % maxS;
-            document.getElementById('cellIdx').innerText = currentCellSeed + 1;
-
-            // CSG 개념을 응용하여 평면들에 의해 절단된 기하체(Box 기반) 생성
-            const boxSize = 400;
-            let cellGeom = new THREE.BoxGeometry(boxSize, boxSize, boxSize);
-            const material = new THREE.MeshPhongMaterial({ 
-                color: 0xff4400, 
-                transparent: true, 
-                opacity: 0.8,
-                shininess: 100
-            });
-
-            currentCellMesh = new THREE.Mesh(cellGeom, material);
-            
-            // 시각적 효과를 위해 임의의 분할 영역으로 이동
-            const randomOffset = new THREE.Vector3(
-                Math.sin(currentCellSeed * 1.5) * 40,
-                Math.cos(currentCellSeed * 2.1) * 40,
-                Math.sin(currentCellSeed * 0.7) * 40
-            );
-            currentCellMesh.position.copy(randomOffset);
-
-            // 영역 절단(Clipping) 시각화: 평면 밖의 부분을 가상으로 도려냄
-            const clipPlanes = planes.map(p => {
-                const side = (randomOffset.dot(p.normal) + p.plane.constant > 0) ? 1 : -1;
-                return new THREE.Plane(p.normal.clone().multiplyScalar(side), p.plane.constant * side);
-            });
-            
-            renderer.localClippingEnabled = true;
-            currentCellMesh.material.clippingPlanes = clipPlanes;
-
-            scene.add(currentCellMesh);
         }
 
         function togglePlanes() {
@@ -171,15 +210,15 @@
             const n = planes.length;
             document.getElementById('nCount').innerText = n;
             document.getElementById('sCount').innerText = Math.round((n**3 + 5*n + 6)/6);
+            document.getElementById('cellIdx').innerText = validSignVectors.length > 0 ? (cellIndex % validSignVectors.length) + 1 : 0;
         }
 
         function resetAll() {
             planes.forEach(p => scene.remove(p.mesh));
             intersectionLines.forEach(l => scene.remove(l));
             if (currentCellMesh) scene.remove(currentCellMesh);
-            planes = []; intersectionLines = []; currentCellSeed = 0;
+            planes = []; validSignVectors = []; cellIndex = 0;
             updateStats();
-            document.getElementById('cellIdx').innerText = "-";
         }
 
         function animate() {
