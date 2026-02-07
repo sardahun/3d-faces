@@ -10,23 +10,22 @@
         .btn-group { display: grid; grid-template-columns: 1fr; gap: 8px; }
         button { padding: 10px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; transition: 0.2s; }
         button:hover { background: #333; border-color: #00d4ff; }
-        .btn-toggle { background: #444; }
         .desc { font-size: 0.75rem; color: #888; margin-top: 10px; line-height: 1.4; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 분석</div>
+        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 분석 (겹침 보정)</div>
         <div class="stat">평면 수 (n): <span id="nCount">0</span></div>
         <div class="stat">영역 탐색: <span id="cellIdx">0</span> / <span id="sCount">1</span></div>
         <div class="btn-group">
             <button onclick="addOptimizedPlane()">최적 평면 추가</button>
-            <button onclick="togglePlanes()" class="btn-toggle">평면 표시 ON/OFF</button>
+            <button onclick="togglePlanes()">평면 표시 ON/OFF</button>
             <button onclick="navigateCells()" style="background: #004466;">영역 순차 탐색</button>
             <button onclick="hideCurrentCell()" style="background: #664400;">영역 표시 끄기</button>
             <button onclick="resetAll()" style="background: #440000;">전체 초기화</button>
         </div>
-        <div class="desc">* 영역 표시를 끄면 교선과 평면 구조만 확인할 수 있습니다.</div>
+        <div class="desc">* 평면과 겹치는 부분도 선명하게 보이도록 오프셋 보정을 적용했습니다.</div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -35,14 +34,14 @@
     <script>
         let scene, camera, renderer, controls;
         let planes = [], intersectionLines = [];
-        let currentCellMesh = null;
+        let currentCellGroup = null; // 메시와 와이어프레임을 묶기 위함
         let showPlanes = true, cellIndex = 0;
         let validSignVectors = [];
 
         function init() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000);
-            camera.position.set(400, 300, 400);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 20000);
+            camera.position.set(600, 500, 600);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -50,9 +49,9 @@
             document.body.appendChild(renderer.domElement);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
             const sun = new THREE.DirectionalLight(0xffffff, 0.8);
-            sun.position.set(150, 250, 150);
+            sun.position.set(300, 500, 300);
             scene.add(sun);
 
             animate();
@@ -61,15 +60,15 @@
         function addOptimizedPlane() {
             const n = planes.length;
             const phi = n * 137.5 * (Math.PI / 180);
-            const theta = Math.acos(1 - 2 * ((n + 0.5) / 10)); 
+            const theta = Math.acos(1 - 2 * ((n + 0.5) / 15)); 
             const normal = new THREE.Vector3(Math.sin(theta) * Math.cos(phi), Math.sin(theta) * Math.sin(phi), Math.cos(theta)).normalize();
-            const d = (n + 1) * 40 * (n % 2 === 0 ? 1 : -1);
+            const d = (n % 2 === 0 ? 40 : -40) * (n + 1);
             const plane = new THREE.Plane(normal, -d);
             
-            const helperGeom = new THREE.PlaneGeometry(2500, 2500);
+            const helperGeom = new THREE.PlaneGeometry(5000, 5000);
             const material = new THREE.MeshPhongMaterial({
-                color: new THREE.Color().setHSL((n * 0.23) % 1, 0.7, 0.5),
-                side: THREE.DoubleSide, transparent: true, opacity: 0.1, visible: showPlanes
+                color: new THREE.Color().setHSL((n * 0.2) % 1, 0.5, 0.4),
+                side: THREE.DoubleSide, transparent: true, opacity: 0.15, visible: showPlanes
             });
 
             const mesh = new THREE.Mesh(helperGeom, material);
@@ -82,7 +81,7 @@
             updateIntersections();
             findAllCells();
             cellIndex = 0;
-            hideCurrentCell(); // 평면 추가 시 기존 영역 표시 제거
+            hideCurrentCell();
             updateStats();
         }
 
@@ -91,13 +90,13 @@
             const n = planes.length;
             if (n === 0) return;
 
-            // 1. 교점 기반 샘플링
+            // 교점 샘플링
             for (let i = 0; i < n; i++) {
                 for (let j = i + 1; j < n; j++) {
                     for (let k = j + 1; k < n; k++) {
                         const intersection = calculateThreePlaneIntersection(planes[i].plane, planes[j].plane, planes[k].plane);
                         if (intersection) {
-                            const eps = 10.0;
+                            const eps = 2.0; 
                             for (let s1 of [-1, 1]) for (let s2 of [-1, 1]) for (let s3 of [-1, 1]) {
                                 addIfUnique(intersection.clone().add(new THREE.Vector3(s1*eps, s2*eps, s3*eps)));
                             }
@@ -105,8 +104,8 @@
                     }
                 }
             }
-            // 2. 무한 영역 샘플링
-            const range = 600, step = 150;
+            // 무한 영역 샘플링
+            const range = 1000, step = 250;
             for (let x = -range; x <= range; x += step) 
                 for (let y = -range; y <= range; y += step) 
                     for (let z = -range; z <= range; z += step) addIfUnique(new THREE.Vector3(x, y, z));
@@ -117,7 +116,7 @@
         function calculateThreePlaneIntersection(p1, p2, p3) {
             const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
             const det = n1.dot(new THREE.Vector3().crossVectors(n2, n3));
-            if (Math.abs(det) < 0.001) return null;
+            if (Math.abs(det) < 0.0001) return null;
             const v1 = new THREE.Vector3().crossVectors(n2, n3).multiplyScalar(-p1.constant);
             const v2 = new THREE.Vector3().crossVectors(n3, n1).multiplyScalar(-p2.constant);
             const v3 = new THREE.Vector3().crossVectors(n1, n2).multiplyScalar(-p3.constant);
@@ -127,7 +126,9 @@
         function addIfUnique(point) {
             const vector = planes.map(p => (point.dot(p.normal) + p.plane.constant > 0 ? 1 : -1));
             const key = vector.join(',');
-            if (!validSignVectors.some(v => v.key === key)) validSignVectors.push({ key, vector, center: point.clone() });
+            if (!validSignVectors.some(v => v.key === key)) {
+                validSignVectors.push({ key, vector, center: point.clone() });
+            }
         }
 
         function navigateCells() {
@@ -135,41 +136,63 @@
             hideCurrentCell();
 
             const cellData = validSignVectors[cellIndex % validSignVectors.length];
-            const geometry = new THREE.BoxGeometry(3000, 3000, 3000);
+            const geometry = new THREE.BoxGeometry(10000, 10000, 10000); 
+            
             const clippingPlanes = planes.map((p, i) => {
                 const sign = cellData.vector[i];
                 return new THREE.Plane(p.normal.clone().multiplyScalar(-sign), p.plane.constant * -sign);
             });
 
+            currentCellGroup = new THREE.Group();
+
+            // 1. 면(Face) 렌더링 - PolygonOffset 적용으로 평면과의 겹침 해결
             const material = new THREE.MeshPhongMaterial({
-                color: 0xff3300, transparent: true, opacity: 0.8, shininess: 100,
-                clippingPlanes: clippingPlanes, side: THREE.DoubleSide
+                color: 0xff4400, 
+                transparent: true, 
+                opacity: 0.7, 
+                clippingPlanes: clippingPlanes, 
+                side: THREE.DoubleSide,
+                polygonOffset: true,
+                polygonOffsetFactor: -1.0, // 카메라 쪽으로 밀어올림
+                polygonOffsetUnits: -4.0
             });
 
-            currentCellMesh = new THREE.Mesh(geometry, material);
-            currentCellMesh.position.copy(cellData.center);
-            scene.add(currentCellMesh);
+            const fillMesh = new THREE.Mesh(geometry, material);
+            currentCellGroup.add(fillMesh);
+
+            // 2. 와이어프레임 추가 - 형태를 더 명확하게 함
+            const wireframeMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                wireframe: true,
+                transparent: true,
+                opacity: 0.3,
+                clippingPlanes: clippingPlanes
+            });
+            const wireMesh = new THREE.Mesh(geometry, wireframeMat);
+            currentCellGroup.add(wireMesh);
+
+            scene.add(currentCellGroup);
 
             cellIndex = (cellIndex + 1) % validSignVectors.length;
             updateStats();
         }
 
-        // 영역 표시를 끄는 핵심 함수
         function hideCurrentCell() {
-            if (currentCellMesh) {
-                scene.remove(currentCellMesh);
-                currentCellMesh.geometry.dispose();
-                currentCellMesh.material.dispose();
-                currentCellMesh = null;
+            if (currentCellGroup) {
+                currentCellGroup.children.forEach(child => {
+                    child.geometry.dispose();
+                    child.material.dispose();
+                });
+                scene.remove(currentCellGroup);
+                currentCellGroup = null;
             }
-            // 탐색 상태 초기화 (다시 누를 때 1번부터 시작하도록 하려면 cellIndex = 0 추가)
             updateStats();
         }
 
         function updateIntersections() {
             intersectionLines.forEach(l => scene.remove(l));
             intersectionLines = [];
-            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.5 });
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.6 });
             for (let i = 0; i < planes.length; i++) {
                 for (let j = i + 1; j < planes.length; j++) {
                     const p1 = planes[i].plane, p2 = planes[j].plane;
@@ -177,7 +200,7 @@
                     if (lineDir.length() < 0.0001) continue;
                     const m = new THREE.Matrix4().set(p1.normal.x, p1.normal.y, p1.normal.z, 0, p2.normal.x, p2.normal.y, p2.normal.z, 0, lineDir.x, lineDir.y, lineDir.z, 0, 0, 0, 0, 1).invert();
                     const linePoint = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
-                    const geom = new THREE.BufferGeometry().setFromPoints([linePoint.clone().add(lineDir.clone().multiplyScalar(4000)), linePoint.clone().add(lineDir.clone().multiplyScalar(-4000))]);
+                    const geom = new THREE.BufferGeometry().setFromPoints([linePoint.clone().add(lineDir.clone().multiplyScalar(6000)), linePoint.clone().add(lineDir.clone().multiplyScalar(-6000))]);
                     const line = new THREE.Line(geom, lineMat);
                     scene.add(line);
                     intersectionLines.push(line);
@@ -194,9 +217,7 @@
             const n = planes.length;
             document.getElementById('nCount').innerText = n;
             document.getElementById('sCount').innerText = Math.round((n**3 + 5*n + 6)/6);
-            
-            let displayIdx = (currentCellMesh === null) ? 0 : 
-                             (cellIndex === 0 ? validSignVectors.length : cellIndex);
+            let displayIdx = (currentCellGroup === null) ? 0 : (cellIndex === 0 ? validSignVectors.length : cellIndex);
             document.getElementById('cellIdx').innerText = displayIdx;
         }
 
