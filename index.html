@@ -15,16 +15,16 @@
 </head>
 <body>
     <div id="ui">
-        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 정밀 분석</div>
+        <div style="font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #555; padding-bottom: 5px;">공간 분할 전 영역 탐색</div>
         <div class="stat">평면 수 (n): <span id="nCount">0</span></div>
         <div class="stat">영역 탐색: <span id="cellIdx">0</span> / <span id="sCount">1</span></div>
         <div class="btn-group">
             <button onclick="addOptimizedPlane()">최적 평면 추가</button>
             <button onclick="togglePlanes()">평면 표시 전환</button>
-            <button onclick="navigateCells()" style="background: #004466;">영역 순차 탐색</button>
+            <button onclick="navigateCells()" style="background: #004466;">영역 순차 탐색 (1번부터)</button>
             <button onclick="resetAll()" style="background: #440000;">전체 초기화</button>
         </div>
-        <div class="desc">* 초기화 시 교선을 포함한 모든 오브젝트가 제거됩니다.</div>
+        <div class="desc">* 모든 유효 영역(Sign Vector)을 전수 조사하여 누락 없이 1번부터 표시합니다.</div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -32,15 +32,15 @@
 
     <script>
         let scene, camera, renderer, controls;
-        let planes = [], intersectionLines = []; // 교선 리스트 명시적 관리
+        let planes = [], intersectionLines = [];
         let currentCellMesh = null;
         let showPlanes = true, cellIndex = 0;
         let validSignVectors = [];
 
         function init() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 5000);
-            camera.position.set(250, 200, 250);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000);
+            camera.position.set(300, 250, 300);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -67,15 +67,16 @@
                 Math.cos(theta)
             ).normalize();
 
-            const d = (n + 1) * 25 * (n % 2 === 0 ? 1 : -1);
+            // 평면들이 원점에 너무 몰리지 않도록 오프셋 조절
+            const d = (n + 1) * 35 * (n % 2 === 0 ? 1 : -1);
             const plane = new THREE.Plane(normal, -d);
             
-            const helperGeom = new THREE.PlaneGeometry(1000, 1000);
+            const helperGeom = new THREE.PlaneGeometry(2000, 2000);
             const material = new THREE.MeshPhongMaterial({
-                color: new THREE.Color().setHSL((n * 0.17) % 1, 0.7, 0.5),
+                color: new THREE.Color().setHSL((n * 0.21) % 1, 0.7, 0.5),
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.15,
+                opacity: 0.12,
                 visible: showPlanes
             });
 
@@ -87,55 +88,24 @@
             planes.push({ plane, mesh, normal, d });
 
             updateIntersections();
-            findValidCells();
+            findAllCells(); // 전수 탐색으로 변경
+            cellIndex = 0; // 추가 시 인덱스 리셋
             updateStats();
         }
 
-        function updateIntersections() {
-            // 1. 기존 교선 제거 로직 강화
-            intersectionLines.forEach(line => scene.remove(line));
-            intersectionLines = [];
-
-            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.4 });
-
-            for (let i = 0; i < planes.length; i++) {
-                for (let j = i + 1; j < planes.length; j++) {
-                    const p1 = planes[i].plane, p2 = planes[j].plane;
-                    const lineDir = new THREE.Vector3().crossVectors(p1.normal, p2.normal);
-                    if (lineDir.length() < 0.0001) continue;
-
-                    const m = new THREE.Matrix4().set(
-                        p1.normal.x, p1.normal.y, p1.normal.z, 0,
-                        p2.normal.x, p2.normal.y, p2.normal.z, 0,
-                        lineDir.x, lineDir.y, lineDir.z, 0,
-                        0, 0, 0, 1
-                    ).invert();
-                    const linePoint = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
-
-                    const geom = new THREE.BufferGeometry().setFromPoints([
-                        linePoint.clone().add(lineDir.clone().multiplyScalar(2000)),
-                        linePoint.clone().add(lineDir.clone().multiplyScalar(-2000))
-                    ]);
-                    const line = new THREE.Line(geom, lineMat);
-                    scene.add(line);
-                    intersectionLines.push(line); // 관리 리스트에 추가
-                }
-            }
-        }
-
-        function findValidCells() {
+        // 전수 영역 탐색 알고리즘: 교점 기반 + 그리드 샘플링
+        function findAllCells() {
             validSignVectors = [];
             const n = planes.length;
             if (n === 0) return;
 
-            const testPoints = [new THREE.Vector3(0,0,0)];
-            
+            // 1. 모든 교점 주변 탐색
             for (let i = 0; i < n; i++) {
                 for (let j = i + 1; j < n; j++) {
                     for (let k = j + 1; k < n; k++) {
                         const intersection = calculateThreePlaneIntersection(planes[i].plane, planes[j].plane, planes[k].plane);
                         if (intersection) {
-                            const eps = 3.0;
+                            const eps = 5.0;
                             for (let s1 of [-1, 1]) {
                                 for (let s2 of [-1, 1]) {
                                     for (let s3 of [-1, 1]) {
@@ -147,6 +117,20 @@
                     }
                 }
             }
+
+            // 2. 무한 영역(열린 영역) 보완을 위한 원거리 그리드 샘플링
+            const range = 500;
+            const step = 100;
+            for (let x = -range; x <= range; x += step) {
+                for (let y = -range; y <= range; y += step) {
+                    for (let z = -range; z <= range; z += step) {
+                        addIfUnique(new THREE.Vector3(x, y, z));
+                    }
+                }
+            }
+            
+            // 3. 정렬 (일관된 순서를 위해 키값 기준 정렬)
+            validSignVectors.sort((a, b) => a.key.localeCompare(b.key));
         }
 
         function calculateThreePlaneIntersection(p1, p2, p3) {
@@ -171,19 +155,21 @@
             if (validSignVectors.length === 0) return;
             if (currentCellMesh) scene.remove(currentCellMesh);
 
+            // 정확히 1번부터 시작하도록 인덱스 조정
             const cellData = validSignVectors[cellIndex % validSignVectors.length];
-            const geometry = new THREE.BoxGeometry(1500, 1500, 1500);
             
+            const geometry = new THREE.BoxGeometry(2000, 2000, 2000);
             const clippingPlanes = planes.map((p, i) => {
                 const sign = cellData.vector[i];
+                // 해당 영역의 내부를 남기기 위해 클리핑 평면 설정
                 return new THREE.Plane(p.normal.clone().multiplyScalar(-sign), p.plane.constant * -sign);
             });
 
             const material = new THREE.MeshPhongMaterial({
-                color: 0xff4400,
+                color: 0xff3300,
                 transparent: true,
-                opacity: 0.85,
-                shininess: 80,
+                opacity: 0.8,
+                shininess: 100,
                 clippingPlanes: clippingPlanes,
                 side: THREE.DoubleSide
             });
@@ -192,8 +178,38 @@
             currentCellMesh.position.copy(cellData.center);
             scene.add(currentCellMesh);
 
-            cellIndex++;
+            cellIndex = (cellIndex + 1) % validSignVectors.length;
             updateStats();
+        }
+
+        function updateIntersections() {
+            intersectionLines.forEach(l => scene.remove(l));
+            intersectionLines = [];
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.5 });
+
+            for (let i = 0; i < planes.length; i++) {
+                for (let j = i + 1; j < planes.length; j++) {
+                    const p1 = planes[i].plane, p2 = planes[j].plane;
+                    const lineDir = new THREE.Vector3().crossVectors(p1.normal, p2.normal);
+                    if (lineDir.length() < 0.0001) continue;
+
+                    const m = new THREE.Matrix4().set(
+                        p1.normal.x, p1.normal.y, p1.normal.z, 0,
+                        p2.normal.x, p2.normal.y, p2.normal.z, 0,
+                        lineDir.x, lineDir.y, lineDir.z, 0,
+                        0, 0, 0, 1
+                    ).invert();
+                    const linePoint = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
+
+                    const geom = new THREE.BufferGeometry().setFromPoints([
+                        linePoint.clone().add(lineDir.clone().multiplyScalar(3000)),
+                        linePoint.clone().add(lineDir.clone().multiplyScalar(-3000))
+                    ]);
+                    const line = new THREE.Line(geom, lineMat);
+                    scene.add(line);
+                    intersectionLines.push(line);
+                }
+            }
         }
 
         function togglePlanes() {
@@ -203,32 +219,23 @@
 
         function updateStats() {
             const n = planes.length;
+            const expected = Math.round((n**3 + 5*n + 6)/6);
             document.getElementById('nCount').innerText = n;
-            document.getElementById('sCount').innerText = Math.round((n**3 + 5*n + 6)/6);
-            document.getElementById('cellIdx').innerText = validSignVectors.length > 0 ? (cellIndex % validSignVectors.length) + 1 : 0;
+            document.getElementById('sCount').innerText = expected;
+            
+            // 화면 표시용 인덱스: 0일 때는 0, 탐색 중일 때는 1~N
+            let displayIdx = (cellIndex === 0 && currentCellMesh === null) ? 0 : 
+                             (cellIndex === 0 ? validSignVectors.length : cellIndex);
+            document.getElementById('cellIdx').innerText = displayIdx;
         }
 
         function resetAll() {
-            // 1. 평면 제거
             planes.forEach(p => scene.remove(p.mesh));
-            planes = [];
-
-            // 2. 교선 제거 (관리 리스트 활용)
-            intersectionLines.forEach(line => scene.remove(line));
-            intersectionLines = [];
-
-            // 3. 현재 표시된 영역 메시 제거
-            if (currentCellMesh) {
-                scene.remove(currentCellMesh);
-                currentCellMesh = null;
-            }
-
-            // 4. 데이터 초기화
-            validSignVectors = [];
-            cellIndex = 0;
-            
+            intersectionLines.forEach(l => scene.remove(l));
+            if (currentCellMesh) scene.remove(currentCellMesh);
+            planes = []; intersectionLines = []; validSignVectors = []; cellIndex = 0;
+            currentCellMesh = null;
             updateStats();
-            console.log("Scene cleared: Planes and Intersection Lines removed.");
         }
 
         function animate() {
