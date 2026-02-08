@@ -2,49 +2,51 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>평면에 의한 공간 분할 분석기</title>
+    <title>고정밀 공간 분석기 V4</title>
     <style>
-        :root { --bg: #f0f2f5; --panel: rgba(255,255,255,0.9); --text: #1a1a1b; --accent: #007aff; }
-        body.dark { --bg: #0a0a0b; --panel: rgba(20,20,25,0.95); --text: #e1e1e6; --accent: #00d4ff; }
-        body { margin: 0; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'Pretendard', sans-serif; transition: background 0.3s; }
-        #ui { position: absolute; top: 20px; left: 20px; background: var(--panel); padding: 20px; border-radius: 16px; border: 1px solid rgba(128,128,128,0.2); width: 260px; z-index: 100; backdrop-filter: blur(10px); box-shadow: 0 8px 32px rgba(0,0,0,0.1); }
-        .stat { margin-bottom: 8px; font-size: 0.85rem; display: flex; justify-content: space-between; opacity: 0.8; }
+        :root { --bg: #ffffff; --panel: rgba(240,240,240,0.9); --text: #000000; --accent: #007aff; }
+        body.dark { --bg: #0a0a0b; --panel: rgba(30,30,35,0.95); --text: #ffffff; --accent: #00d4ff; }
+        body { margin: 0; overflow: hidden; background: var(--bg); color: var(--text); font-family: sans-serif; transition: 0.3s; }
+        #ui { position: absolute; top: 20px; left: 20px; background: var(--panel); padding: 20px; border-radius: 12px; width: 260px; z-index: 100; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .stat { margin-bottom: 8px; font-size: 0.85rem; display: flex; justify-content: space-between; }
         .btn-group { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 15px; }
-        button { padding: 12px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 8px; font-weight: 600; transition: 0.2s; }
-        button:hover { filter: brightness(1.2); transform: translateY(-1px); }
-        button.secondary { background: rgba(128,128,128,0.2); color: var(--text); }
-        .desc { font-size: 0.7rem; margin-top: 12px; text-align: center; opacity: 0.5; }
+        button { padding: 10px; cursor: pointer; background: var(--accent); color: white; border: none; border-radius: 6px; font-weight: bold; }
+        button.sub { background: #666; }
+        hr { border: 0; border-top: 1px solid #ccc; margin: 15px 0; }
     </style>
 </head>
 <body class="dark">
     <div id="ui">
-        <div style="font-size: 1.1rem; font-weight: bold; margin-bottom: 15px; color: var(--accent);">공간 분할 마스터</div>
-        <div class="stat"><span>테마 설정</span> 
-            <button onclick="toggleTheme()" class="secondary" style="padding: 4px 8px; font-size: 0.7rem;">Mode 변경</button>
+        <b id="title">공간 분석기 V4</b>
+        <div class="btn-group">
+            <button onclick="toggleTheme()" class="sub">테마 전환 (Light/Dark)</button>
         </div>
-        <hr style="border: 0; border-top: 1px solid rgba(128,128,128,0.2); margin: 15px 0;">
+        <hr>
         <div class="stat"><span>평면 수</span> <span id="nCount">0</span></div>
-        <div class="stat"><span>영역 탐색</span> <span id="cellIdx">0 / 0</span></div>
+        <div class="stat"><span>발견된 영역</span> <span id="sCount">0</span></div>
+        <div class="stat"><span>현재 영역</span> <span id="cellIdx">None</span></div>
         <div class="btn-group">
             <button onclick="addPlane()">평면 추가 (+)</button>
-            <button onclick="navigateCells()">영역 순차 탐색</button>
-            <button onclick="resetAll()" class="secondary">전체 리셋</button>
+            <button onclick="togglePlanes()" class="sub">평면 ON/OFF</button>
+            <button onclick="navigateCells()">영역 탐색 (순차)</button>
+            <button onclick="hideCurrentCell()" class="sub">영역 끄기</button>
+            <button onclick="location.reload()" style="background:#ff4444;">초기화</button>
         </div>
-        <div class="desc">평면이 겹쳐도 영역이 뚫리지 않도록<br>수학적 마진 보정을 적용했습니다.</div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <script>
-        let scene, camera, renderer, controls, light;
-        let planes = [], cellIndex = 0, validSignVectors = [];
-        let currentCell = null;
+        let scene, camera, renderer, controls;
+        let planes = [], intersectionLines = [];
+        let validSignVectors = [], cellIndex = 0;
+        let currentCell = null, showPlanes = true;
 
         function init() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 20000);
-            camera.position.set(600, 500, 600);
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 50000);
+            camera.position.set(1200, 1000, 1200);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -52,75 +54,102 @@
             document.body.appendChild(renderer.domElement);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-
-            const ambient = new THREE.AmbientLight(0xffffff, 0.7);
-            scene.add(ambient);
-            light = new THREE.DirectionalLight(0xffffff, 0.8);
-            light.position.set(1, 2, 1);
-            scene.add(light);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(500, 1000, 500);
+            scene.add(sun);
 
             animate();
         }
 
         function toggleTheme() {
-            const body = document.body;
-            body.classList.toggle('dark');
-            const isDark = body.classList.contains('dark');
-            // 평면 색상 업데이트
+            document.body.classList.toggle('dark');
+            const isDark = document.body.classList.contains('dark');
             planes.forEach(p => {
-                p.mesh.material.color.set(isDark ? 0x444444 : 0xcccccc);
-                p.mesh.material.opacity = isDark ? 0.15 : 0.25;
+                p.mesh.material.color.set(isDark ? 0x444444 : 0xaaaaaa);
             });
         }
 
         function addPlane() {
-            const n = planes.length;
             const normal = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
-            const d = (Math.random() - 0.5) * 150;
+            const d = (Math.random() - 0.5) * 300;
             const plane = new THREE.Plane(normal, -d);
 
-            const isDark = document.body.classList.contains('dark');
-            const material = new THREE.MeshPhongMaterial({
-                color: isDark ? 0x444444 : 0xcccccc,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: isDark ? 0.15 : 0.25,
-                depthWrite: false // 평면끼리 겹칠 때 검게 타는 현상 방지
+            const mat = new THREE.MeshPhongMaterial({
+                color: document.body.classList.contains('dark') ? 0x444444 : 0xaaaaaa,
+                side: THREE.DoubleSide, transparent: true, opacity: 0.2, depthWrite: false
             });
 
-            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000), material);
+            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(10000, 10000), mat);
             mesh.lookAt(normal);
             mesh.position.copy(normal.clone().multiplyScalar(d));
+            mesh.visible = showPlanes;
+            
             scene.add(mesh);
-            planes.push({ plane, mesh, normal });
+            planes.push({ plane, mesh, normal, d });
 
+            updateIntersections();
             findAllCells();
             updateStats();
         }
 
+        function togglePlanes() {
+            showPlanes = !showPlanes;
+            planes.forEach(p => p.mesh.visible = showPlanes);
+            intersectionLines.forEach(l => l.visible = showPlanes);
+        }
+
+        function updateIntersections() {
+            intersectionLines.forEach(l => scene.remove(l));
+            intersectionLines = [];
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.5 });
+
+            for (let i = 0; i < planes.length; i++) {
+                for (let j = i + 1; j < planes.length; j++) {
+                    const p1 = planes[i].plane, p2 = planes[j].plane;
+                    const dir = new THREE.Vector3().crossVectors(p1.normal, p2.normal);
+                    if (dir.length() < 0.001) continue;
+
+                    const m = new THREE.Matrix4().set(
+                        p1.normal.x, p1.normal.y, p1.normal.z, 0,
+                        p2.normal.x, p2.normal.y, p2.normal.z, 0,
+                        dir.x, dir.y, dir.z, 0, 0, 0, 0, 1
+                    ).invert();
+                    const pt = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
+                    
+                    const geom = new THREE.BufferGeometry().setFromPoints([
+                        pt.clone().add(dir.clone().multiplyScalar(5000)),
+                        pt.clone().add(dir.clone().multiplyScalar(-5000))
+                    ]);
+                    const line = new THREE.Line(geom, lineMat);
+                    line.visible = showPlanes;
+                    scene.add(line);
+                    intersectionLines.push(line);
+                }
+            }
+        }
+
         function findAllCells() {
             validSignVectors = [];
-            const n = planes.length;
-            const pts = [];
-
-            // 전략: 모든 평면 교점 + 주변 샘플링
-            for(let i=0; i<n; i++) {
-                for(let j=i+1; j<n; j++) {
-                    for(let k=j+1; k<n; k++) {
-                        const p = intersect(planes[i].plane, planes[j].plane, planes[k].plane);
-                        if(p) {
-                            for(let x of [-1, 1]) for(let y of [-1, 1]) for(let z of [-1, 1]) {
-                                pts.push(p.clone().add(new THREE.Vector3(x, y, z).multiplyScalar(0.5)));
+            const samples = [];
+            // 모든 3개 평면 교점 추출
+            for(let i=0; i<planes.length; i++) {
+                for(let j=i+1; j<planes.length; j++) {
+                    for(let k=j+1; k<planes.length; k++) {
+                        const pt = getInt(planes[i].plane, planes[j].plane, planes[k].plane);
+                        if(pt) {
+                            const eps = 1.0;
+                            for(let x of [-eps, eps]) for(let y of [-eps, eps]) for(let z of [-eps, eps]) {
+                                samples.push(pt.clone().add(new THREE.Vector3(x,y,z)));
                             }
                         }
                     }
                 }
             }
-            // 중심부 추가 스캔
-            for(let x=-200; x<=200; x+=50) for(let y=-200; y<=200; y+=50) for(let z=-200; z<=200; z+=50) pts.push(new THREE.Vector3(x,y,z));
+            // 원점 근처 보조 샘플링
+            for(let x=-400; x<=400; x+=100) for(let y=-400; y<=400; y+=100) for(let z=-400; z<=400; z+=100) samples.push(new THREE.Vector3(x,y,z));
 
-            pts.forEach(p => {
+            samples.forEach(p => {
                 const vec = planes.map(pl => (p.dot(pl.normal) + pl.plane.constant > 0 ? 1 : -1));
                 const key = vec.join(',');
                 if(!validSignVectors.find(v => v.key === key)) {
@@ -129,7 +158,7 @@
             });
         }
 
-        function intersect(p1, p2, p3) {
+        function getInt(p1, p2, p3) {
             const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
             const det = n1.clone().cross(n2).dot(n3);
             if(Math.abs(det) < 0.001) return null;
@@ -141,44 +170,46 @@
 
         function navigateCells() {
             if(validSignVectors.length === 0) return;
-            if(currentCell) { scene.remove(currentCell); currentCell = null; }
+            hideCurrentCell();
 
             const data = validSignVectors[cellIndex % validSignVectors.length];
-            const size = 5000;
-            
-            // 영역이 열려있지 않게 하기 위해 클리핑 평면에 미세한 여유값(0.1) 적용
             const clipPlanes = planes.map((p, i) => {
-                const s = data.vector[i];
                 const cp = new THREE.Plane().copy(p.plane);
-                if(s === 1) cp.negate();
-                cp.constant -= 0.1; // 핵심: 면이 겹쳐서 구멍 뚫리는 현상 방지
+                if(data.vector[i] === 1) cp.negate();
+                cp.constant -= 0.5; // 폐곡면 보정 마진 확대
                 return cp;
             });
 
-            const geom = new THREE.BoxGeometry(size, size, size);
+            const geom = new THREE.BoxGeometry(10000, 10000, 10000);
             const mat = new THREE.MeshPhongMaterial({
-                color: 0xff3366,
-                emissive: 0x220000,
-                side: THREE.DoubleSide,
+                color: 0xff3300, emissive: 0x440000, side: THREE.DoubleSide,
                 clippingPlanes: clipPlanes,
-                polygonOffset: true, // Z-fighting 방지
-                polygonOffsetFactor: -1,
-                polygonOffsetUnits: -1
+                polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2
             });
 
             currentCell = new THREE.Mesh(geom, mat);
+            currentCell.renderOrder = 999; // 평면보다 우선순위 높임
             scene.add(currentCell);
             
             cellIndex++;
             updateStats();
         }
 
-        function updateStats() {
-            document.getElementById('nCount').innerText = planes.length;
-            document.getElementById('cellIdx').innerText = `${validSignVectors.length > 0 ? (cellIndex-1) % validSignVectors.length + 1 : 0} / ${validSignVectors.length}`;
+        function hideCurrentCell() {
+            if(currentCell) {
+                currentCell.geometry.dispose();
+                currentCell.material.dispose();
+                scene.remove(currentCell);
+                currentCell = null;
+            }
+            updateStats();
         }
 
-        function resetAll() { location.reload(); }
+        function updateStats() {
+            document.getElementById('nCount').innerText = planes.length;
+            document.getElementById('sCount').innerText = validSignVectors.length;
+            document.getElementById('cellIdx').innerText = currentCell ? `${(cellIndex-1) % validSignVectors.length + 1}` : "None";
+        }
 
         function animate() {
             requestAnimationFrame(animate);
