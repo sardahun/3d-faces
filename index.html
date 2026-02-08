@@ -2,34 +2,34 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>공간 분석기 V5 - 시각 최적화</title>
+    <title>공간 분석기 V6 - 정밀 복구판</title>
     <style>
-        :root { --bg: #0a0a0c; --panel: rgba(25, 25, 30, 0.95); --text: #ececec; --accent: #00ff00; }
-        body { margin: 0; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; }
-        #ui { position: absolute; top: 20px; left: 20px; background: var(--panel); padding: 22px; border-radius: 12px; width: 280px; z-index: 100; border: 1px solid #333; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-        .stat { margin-bottom: 10px; font-size: 0.9rem; display: flex; justify-content: space-between; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        body { margin: 0; overflow: hidden; background: #050505; color: #eee; font-family: sans-serif; }
+        #ui { position: absolute; top: 20px; left: 20px; background: rgba(20,20,25,0.9); padding: 20px; border-radius: 12px; width: 280px; z-index: 100; border: 1px solid #444; }
+        .stat { margin-bottom: 8px; font-size: 0.9rem; display: flex; justify-content: space-between; color: #00ff00; }
         .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 15px; }
-        button { padding: 10px; cursor: pointer; background: #333; color: white; border: 1px solid #444; border-radius: 6px; font-weight: bold; transition: 0.2s; font-size: 0.8rem; }
-        button:hover { background: #444; border-color: var(--accent); }
-        button.primary { background: var(--accent); color: #000; grid-column: span 2; }
-        .desc { font-size: 0.75rem; color: #888; margin-top: 15px; line-height: 1.4; }
+        button { padding: 10px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 6px; font-weight: bold; }
+        button:hover { background: #333; border-color: #00ff00; }
+        .primary { background: #00ff00 !important; color: #000 !important; grid-column: span 2; }
+        .desc { font-size: 0.75rem; color: #999; margin-top: 15px; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div style="font-size: 1.2rem; font-weight: bold; margin-bottom: 15px; color: var(--accent);">Pro Spatial Analyzer</div>
-        <div class="stat"><span>평면 수 (N)</span> <span id="nCount">0</span></div>
-        <div class="stat"><span>탐색된 영역</span> <span id="sCount">0</span></div>
-        <div class="stat"><span>현재 영역 번호</span> <span id="cellIdx" style="color:var(--accent)">-</span></div>
+        <b style="font-size: 1.1rem; color: #fff;">공간 분석 정밀 모드</b>
+        <hr style="border: 0; border-top: 1px solid #333; margin: 15px 0;">
+        <div class="stat"><span>평면 개수</span> <span id="nCount">0</span></div>
+        <div class="stat"><span>감지된 영역</span> <span id="sCount">0</span></div>
+        <div class="stat"><span>현재 영역</span> <span id="cellIdx" style="color:#ff3333">-</span></div>
         <div class="btn-group">
-            <button onclick="addPlane()" class="primary">평면 추가 (+)</button>
-            <button onclick="togglePlanes()">평면 ON/OFF</button>
-            <button onclick="toggleLines()">교선 ON/OFF</button>
-            <button onclick="navigateCells()" class="primary" style="background:#007aff; color:#fff;">영역 순차 탐색</button>
-            <button onclick="hideCurrentCell()">영역 끄기</button>
-            <button onclick="location.reload()" style="background:#441111;">초기화</button>
+            <button onclick="addPlane()" class="primary">평면 무작위 추가</button>
+            <button onclick="togglePlanes()">평면 표시</button>
+            <button onclick="toggleLines()">교선 표시</button>
+            <button onclick="navigateCells()" class="primary" style="background:#ff3333 !important; color:#fff !important;">영역 탐색 (부피 축소)</button>
+            <button onclick="hideCurrentCell()">영역 숨기기</button>
+            <button onclick="location.reload()">리셋</button>
         </div>
-        <div class="desc">● 초록색 선: 평면 간의 교선<br>● 붉은 덩어리: 축소된 공간 영역</div>
+        <div class="desc">※ 영역 부피를 깎아서(Shrink) 짤림 현상을 방지하고, 교점 중심 탐색으로 개수를 정확히 측정합니다.</div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -41,10 +41,12 @@
         let validSignVectors = [], cellIndex = 0;
         let currentCell = null, showPlanes = true, showLines = true;
 
+        init();
+
         function init() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 100000);
-            camera.position.set(1500, 1200, 1500);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 100000);
+            camera.position.set(1800, 1500, 1800);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -52,27 +54,25 @@
             document.body.appendChild(renderer.domElement);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-            const sun = new THREE.DirectionalLight(0xffffff, 0.5);
-            sun.position.set(1000, 2000, 1000);
-            scene.add(sun);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+            
+            const light = new THREE.PointLight(0xffffff, 1);
+            light.position.set(2000, 2000, 2000);
+            scene.add(light);
 
             animate();
         }
 
         function addPlane() {
-            const n = planes.length;
             const normal = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
-            const d = (Math.random() - 0.5) * 400;
+            const d = (Math.random() - 0.5) * 500;
             const plane = new THREE.Plane(normal, -d);
 
-            // 평면 색상 다르게 지정
-            const color = new THREE.Color().setHSL((n * 0.13) % 1, 0.7, 0.5);
-            const mat = new THREE.MeshPhongMaterial({
-                color: color, side: THREE.DoubleSide, transparent: true, opacity: 0.25, depthWrite: false
-            });
-
-            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(10000, 10000), mat);
+            const color = new THREE.Color().setHSL(Math.random(), 0.6, 0.5);
+            const mesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(20000, 20000),
+                new THREE.MeshPhongMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.15, depthWrite: false })
+            );
             mesh.lookAt(normal);
             mesh.position.copy(normal.clone().multiplyScalar(d));
             mesh.visible = showPlanes;
@@ -85,21 +85,81 @@
             updateStats();
         }
 
-        function togglePlanes() {
-            showPlanes = !showPlanes;
-            planes.forEach(p => p.mesh.visible = showPlanes);
+        function findAllCells() {
+            validSignVectors = [];
+            const pts = [];
+            const n = planes.length;
+
+            // 1. 모든 3개 평면의 교점 추출
+            for(let i=0; i<n; i++) {
+                for(let j=i+1; j<n; j++) {
+                    for(let k=j+1; k<n; k++) {
+                        const p = getInt(planes[i].plane, planes[j].plane, planes[k].plane);
+                        if(p) {
+                            pts.push(p);
+                            // 교점 주변 미세 샘플링 (부동소수점 대응)
+                            for(let x of [-2, 2]) for(let y of [-2, 2]) for(let z of [-2, 2]) {
+                                pts.push(p.clone().add(new THREE.Vector3(x, y, z)));
+                            }
+                        }
+                    }
+                }
+            }
+            // 2. 원점 및 그리드 보조 샘플링
+            for(let x=-600; x<=600; x+=200) for(let y=-600; y<=600; y+=200) for(let z=-600; z<=600; z+=200) pts.push(new THREE.Vector3(x,y,z));
+
+            // 중복 제거 및 벡터 수집
+            pts.forEach(p => {
+                const vec = planes.map(pl => (p.dot(pl.normal) + pl.plane.constant > 0.001 ? 1 : -1));
+                const key = vec.join(',');
+                if(!validSignVectors.find(v => v.key === key)) {
+                    validSignVectors.push({ key, vector: vec });
+                }
+            });
         }
 
-        function toggleLines() {
-            showLines = !showLines;
-            intersectionLines.forEach(l => l.visible = showLines);
+        function getInt(p1, p2, p3) {
+            const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
+            const det = n1.clone().cross(n2).dot(n3);
+            if(Math.abs(det) < 0.0001) return null;
+            return n2.clone().cross(n3).multiplyScalar(-p1.constant)
+                .add(n3.clone().cross(n1).multiplyScalar(-p2.constant))
+                .add(n1.clone().cross(n2).multiplyScalar(-p3.constant))
+                .divideScalar(det);
+        }
+
+        function navigateCells() {
+            if(validSignVectors.length === 0) return;
+            hideCurrentCell();
+
+            const data = validSignVectors[cellIndex % validSignVectors.length];
+            const clipPlanes = planes.map((p, i) => {
+                const cp = new THREE.Plane().copy(p.plane);
+                if(data.vector[i] === 1) cp.negate();
+                cp.constant -= 10.0; // 영역 부피 대폭 축소 (안전 마진)
+                return cp;
+            });
+
+            // 영역 표시용 박스 (충분히 크게)
+            const geom = new THREE.BoxGeometry(30000, 30000, 30000);
+            const mat = new THREE.MeshPhongMaterial({
+                color: 0xff3333, emissive: 0x440000, side: THREE.DoubleSide,
+                clippingPlanes: clipPlanes,
+                polygonOffset: true, polygonOffsetFactor: -10, polygonOffsetUnits: -10
+            });
+
+            currentCell = new THREE.Mesh(geom, mat);
+            currentCell.renderOrder = 10000; 
+            scene.add(currentCell);
+            
+            cellIndex++;
+            updateStats();
         }
 
         function updateIntersections() {
             intersectionLines.forEach(l => scene.remove(l));
             intersectionLines = [];
-            // 교선 색상: 초록색
-            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff00 });
 
             for (let i = 0; i < planes.length; i++) {
                 for (let j = i + 1; j < planes.length; j++) {
@@ -114,10 +174,9 @@
                     ).invert();
                     const pt = new THREE.Vector3(-p1.constant, -p2.constant, 0).applyMatrix4(m);
                     
-                    // 교선 길이를 평면보다 길게 (20,000)
                     const geom = new THREE.BufferGeometry().setFromPoints([
-                        pt.clone().add(dir.clone().multiplyScalar(10000)),
-                        pt.clone().add(dir.clone().multiplyScalar(-10000))
+                        pt.clone().add(dir.clone().multiplyScalar(30000)),
+                        pt.clone().add(dir.clone().multiplyScalar(-30000))
                     ]);
                     const line = new THREE.Line(geom, lineMat);
                     line.visible = showLines;
@@ -127,85 +186,14 @@
             }
         }
 
-        function findAllCells() {
-            validSignVectors = [];
-            const samples = [];
-            for(let i=0; i<planes.length; i++) {
-                for(let j=i+1; j<planes.length; j++) {
-                    for(let k=j+1; k<planes.length; k++) {
-                        const pt = getInt(planes[i].plane, planes[j].plane, planes[k].plane);
-                        if(pt) {
-                            const eps = 2.0;
-                            for(let x of [-eps, eps]) for(let y of [-eps, eps]) for(let z of [-eps, eps]) {
-                                samples.push(pt.clone().add(new THREE.Vector3(x,y,z)));
-                            }
-                        }
-                    }
-                }
-            }
-            for(let x=-500; x<=500; x+=150) for(let y=-500; y<=500; y+=150) for(let z=-500; z<=500; z+=150) samples.push(new THREE.Vector3(x,y,z));
-
-            samples.forEach(p => {
-                const vec = planes.map(pl => (p.dot(pl.normal) + pl.plane.constant > 0 ? 1 : -1));
-                const key = vec.join(',');
-                if(!validSignVectors.find(v => v.key === key)) {
-                    validSignVectors.push({ key, vector: vec });
-                }
-            });
-        }
-
-        function getInt(p1, p2, p3) {
-            const n1 = p1.normal, n2 = p2.normal, n3 = p3.normal;
-            const det = n1.clone().cross(n2).dot(n3);
-            if(Math.abs(det) < 0.001) return null;
-            return n2.clone().cross(n3).multiplyScalar(-p1.constant)
-                .add(n3.clone().cross(n1).multiplyScalar(-p2.constant))
-                .add(n1.clone().cross(n2).multiplyScalar(-p3.constant))
-                .divideScalar(det);
-        }
-
-        function navigateCells() {
-            if(validSignVectors.length === 0) return;
-            hideCurrentCell();
-
-            const data = validSignVectors[cellIndex % validSignVectors.length];
-            // 영역 크기 축소를 위해 클리핑 마진을 더 크게 조정
-            const clipPlanes = planes.map((p, i) => {
-                const cp = new THREE.Plane().copy(p.plane);
-                if(data.vector[i] === 1) cp.negate();
-                cp.constant -= 5.0; // 영역 크기 축소 (Shrink)
-                return cp;
-            });
-
-            const geom = new THREE.BoxGeometry(15000, 15000, 15000);
-            const mat = new THREE.MeshPhongMaterial({
-                color: 0xff0000, emissive: 0x330000, side: THREE.DoubleSide,
-                clippingPlanes: clipPlanes,
-                polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5
-            });
-
-            currentCell = new THREE.Mesh(geom, mat);
-            currentCell.renderOrder = 2000; // 최우선순위
-            scene.add(currentCell);
-            
-            cellIndex++;
-            updateStats();
-        }
-
-        function hideCurrentCell() {
-            if(currentCell) {
-                currentCell.geometry.dispose();
-                currentCell.material.dispose();
-                scene.remove(currentCell);
-                currentCell = null;
-            }
-            updateStats();
-        }
+        function togglePlanes() { showPlanes = !showPlanes; planes.forEach(p => p.mesh.visible = showPlanes); }
+        function toggleLines() { showLines = !showLines; intersectionLines.forEach(l => l.visible = showLines); }
+        function hideCurrentCell() { if(currentCell) { scene.remove(currentCell); currentCell = null; } updateStats(); }
 
         function updateStats() {
             document.getElementById('nCount').innerText = planes.length;
             document.getElementById('sCount').innerText = validSignVectors.length;
-            document.getElementById('cellIdx').innerText = currentCell ? `${(cellIndex-1) % validSignVectors.length + 1}` : "-";
+            document.getElementById('cellIdx').innerText = currentCell ? (cellIndex-1) % validSignVectors.length + 1 : "-";
         }
 
         function animate() {
@@ -213,8 +201,6 @@
             controls.update();
             renderer.render(scene, camera);
         }
-
-        init();
     </script>
 </body>
 </html>
